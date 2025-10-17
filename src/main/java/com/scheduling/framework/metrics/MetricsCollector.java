@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 /**
  * Recolector de métricas para evaluar el rendimiento del scheduler
  */
-public class MetricsCollector {
+public class MetricsCollector implements java.io.Serializable {
     
     private static final Logger LOG = LoggerFactory.getLogger(MetricsCollector.class);
     
@@ -32,7 +32,10 @@ public class MetricsCollector {
     }
     
     public void recordTaskCompletion(Task task) {
-        task.setCompletionTime(System.currentTimeMillis());
+        // Solo establecer completionTime si no está ya establecido
+        if (task.getCompletionTime() == 0) {
+            task.setCompletionTime(System.currentTimeMillis());
+        }
         completedTasks.offer(task);
     }
     

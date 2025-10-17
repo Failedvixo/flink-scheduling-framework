@@ -14,7 +14,7 @@ import java.util.PriorityQueue;
  * Implementación de un scheduler basado en prioridades
  * Las tareas con mayor prioridad se procesan primero
  */
-public class PriorityScheduler implements TaskScheduler {
+public class PriorityScheduler implements TaskScheduler, java.io.Serializable {
     
     private static final Logger LOG = LoggerFactory.getLogger(PriorityScheduler.class);
     
@@ -24,11 +24,24 @@ public class PriorityScheduler implements TaskScheduler {
     private int runningTasks;
     
     public PriorityScheduler() {
-        this.taskQueue = new PriorityQueue<>(
-            Comparator.comparingInt(Task::getPriority).reversed()
-                .thenComparingLong(Task::getArrivalTime)
-        );
+        this.taskQueue = new PriorityQueue<>(new TaskPriorityComparator());
         this.runningTasks = 0;
+    }
+    
+    /**
+     * Comparador serializable para ordenar tareas por prioridad
+     */
+    private static class TaskPriorityComparator implements Comparator<Task>, java.io.Serializable {
+        @Override
+        public int compare(Task t1, Task t2) {
+            // Mayor prioridad primero
+            int priorityCompare = Integer.compare(t2.getPriority(), t1.getPriority());
+            if (priorityCompare != 0) {
+                return priorityCompare;
+            }
+            // En caso de empate, FCFS (menor tiempo de llegada primero)
+            return Long.compare(t1.getArrivalTime(), t2.getArrivalTime());
+        }
     }
     
     @Override

@@ -5,6 +5,7 @@ import org.apache.beam.sdk.nexmark.model.Bid;
 import org.apache.beam.sdk.nexmark.model.Person;
 import org.apache.beam.sdk.nexmark.model.Auction;
 import org.apache.beam.sdk.nexmark.model.Event;
+import org.joda.time.Instant;
 
 import java.io.Serializable;
 import java.util.UUID;
@@ -44,7 +45,8 @@ public class NexmarkAdapter implements Serializable {
             "CC",
             "City",
             "State",
-            System.currentTimeMillis()
+            new Instant(System.currentTimeMillis()),
+            "extra"
         );
         return new Task(taskId, "PERSON", person, System.currentTimeMillis(), 1);
     }
@@ -60,10 +62,11 @@ public class NexmarkAdapter implements Serializable {
             "Description",
             100L,
             200L,
-            System.currentTimeMillis(),
-            System.currentTimeMillis() + 3600000,
+            new Instant(System.currentTimeMillis()),
+            new Instant(System.currentTimeMillis() + 3600000),
             1L,
-            10L
+            10L,
+            "extra"
         );
         return new Task(taskId, "AUCTION", auction, System.currentTimeMillis(), 2);
     }
@@ -77,7 +80,7 @@ public class NexmarkAdapter implements Serializable {
             1L,
             2L,
             100L,
-            System.currentTimeMillis(),
+            new Instant(System.currentTimeMillis()),
             "extra"
         );
         return new Task(taskId, "BID", bid, System.currentTimeMillis(), 3);

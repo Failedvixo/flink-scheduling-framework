@@ -56,7 +56,30 @@ public class SchedulingBenchmarkJob {
         processedStream
             .map(new MapFunction<Task, String>() {
                 @Override
-                public NexmarkSimulatedSource(int numEvents) {
+                public String map(Task task) {
+                    return String.format("Processed: %s [Wait: %d ms, Exec: %d ms]",
+                        task.getTaskId(),
+                        task.getWaitingTime(),
+                        task.getExecutionTime());
+                }
+            })
+            .print()
+            .name("Result Sink");
+        
+        // Ejecutar el job
+        env.execute("Flink Scheduling Benchmark - " + scheduler.getAlgorithmName());
+    }
+    
+    /**
+     * Source que simula eventos de Nexmark
+     */
+    private static class NexmarkSimulatedSource implements SourceFunction<Task> {
+        
+        private final int numEvents;
+        private volatile boolean running = true;
+        private final Random random = new Random();
+        
+        public NexmarkSimulatedSource(int numEvents) {
             this.numEvents = numEvents;
         }
         
@@ -98,27 +121,4 @@ public class SchedulingBenchmarkJob {
             running = false;
         }
     }
-} String map(Task task) {
-                    return String.format("Processed: %s [Wait: %d ms, Exec: %d ms]",
-                        task.getTaskId(),
-                        task.getWaitingTime(),
-                        task.getExecutionTime());
-                }
-            })
-            .print()
-            .name("Result Sink");
-        
-        // Ejecutar el job
-        env.execute("Flink Scheduling Benchmark - " + scheduler.getAlgorithmName());
-    }
-    
-    /**
-     * Source que simula eventos de Nexmark
-     */
-    private static class NexmarkSimulatedSource implements SourceFunction<Task> {
-        
-        private final int numEvents;
-        private volatile boolean running = true;
-        private final Random random = new Random();
-        
-        public
+}

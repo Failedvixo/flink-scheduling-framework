@@ -14,7 +14,7 @@ import java.util.Queue;
  * Implementación del algoritmo First Come First Serve (FCFS)
  * Las tareas se procesan en el orden en que llegan
  */
-public class FCFSScheduler implements TaskScheduler {
+public class FCFSScheduler implements TaskScheduler, java.io.Serializable {
     
     private static final Logger LOG = LoggerFactory.getLogger(FCFSScheduler.class);
     
