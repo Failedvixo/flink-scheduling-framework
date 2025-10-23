@@ -1,7 +1,9 @@
 package com.scheduling.framework;
 
 import com.scheduling.framework.model.Task;
-import com.scheduling.framework.nexmark.NexmarkAdapter;
+import com.scheduling.framework.resource.ResourceScheduler;
+import com.scheduling.framework.resource.impl.FCFSResourceScheduler;
+import com.scheduling.framework.resource.impl.PriorityResourceScheduler;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.configuration.Configuration;
@@ -10,69 +12,83 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 
 import java.io.Serializable;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Random;
 
 /**
- * Job simplificado de Flink para comparar schedulers sin problemas de serialización
+ * Flink Job con Event Router pattern para benchmark Nexmark
  */
 public class FlinkSchedulerJob {
     
     public static void main(String[] args) throws Exception {
         
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setParallelism(1);
-        
+        // Ejecutar FCFS primero
         System.out.println("========================================");
-        System.out.println("       FLINK SCHEDULER COMPARISON      ");
+        System.out.println("       TESTING FCFS SCHEDULER          ");
         System.out.println("========================================");
+        runSchedulerTest("FCFS");
         
-        // SOURCE: Generar tareas
-        DataStream<Task> taskStream = env
-            .addSource(new TaskSource(5000))
-            .name("Task Generator");
+        Thread.sleep(2000); // Pausa entre tests
         
-        // FCFS Processing
-        DataStream<TaskResult> fcfsResults = taskStream
-            .map(new FCFSProcessor())
-            .name("FCFS Scheduler");
+        // Ejecutar Priority después
+        System.out.println("\n========================================");
+        System.out.println("       TESTING PRIORITY SCHEDULER      ");
+        System.out.println("========================================");
+        runSchedulerTest("Priority");
         
-        // Priority Processing  
-        DataStream<TaskResult> priorityResults = taskStream
-            .map(new PriorityProcessor())
-            .name("Priority Scheduler");
-        
-        // Collect Results
-        fcfsResults.map(new ResultCollector("FCFS")).name("FCFS Collector");
-        priorityResults.map(new ResultCollector("Priority")).name("Priority Collector");
-        
-        env.execute("Flink Scheduler Comparison");
-        
-        // Esperar un momento para que se procesen todos los resultados
-        Thread.sleep(1000);
-        
-        // Mostrar resumen final
-        ResultCollector.printFinalSummary();
+        // Mostrar comparación final
+        ResultCollector.printFinalComparison();
     }
     
-    // Source que genera tareas
-    public static class TaskSource implements SourceFunction<Task> {
-        private final int numTasks;
-        private volatile boolean running = true;
+    private static void runSchedulerTest(String schedulerType) throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(4); // 4 instancias paralelas del MISMO scheduler
         
-        public TaskSource(int numTasks) {
-            this.numTasks = numTasks;
+        // SOURCE: Generar eventos Nexmark
+        DataStream<Task> taskStream = env
+            .addSource(new NexmarkEventSource(5000))
+            .name("Nexmark Event Generator");
+        
+        // DISTRIBUTED SCHEDULING: Todas las instancias usan el MISMO algoritmo
+        DataStream<TaskResult> results = taskStream
+            .keyBy(task -> task.getTaskId().hashCode() % 4) // Distribuir entre 4 instancias
+            .map(new ResourceSchedulerProcessor(schedulerType)) // Mismo scheduler en todas
+            .name(schedulerType + " Distributed Scheduler");
+        
+        // SINK: Recolectar resultados
+        results.map(new ResultCollector(schedulerType)).name("Result Collector");
+        
+        env.execute("Flink " + schedulerType + " Test");
+        
+        Thread.sleep(1000); // Esperar procesamiento
+    }
+    
+    // Source que genera eventos tipo Nexmark
+    public static class NexmarkEventSource implements SourceFunction<Task> {
+        private final int numEvents;
+        private volatile boolean running = true;
+        private final List<String> eventTypes = Arrays.asList("PERSON", "AUCTION", "BID");
+        private final Random random = new Random();
+        
+        public NexmarkEventSource(int numEvents) {
+            this.numEvents = numEvents;
         }
         
         @Override
         public void run(SourceContext<Task> ctx) throws Exception {
             long baseTime = System.currentTimeMillis();
             
-            for (int i = 0; i < numTasks && running; i++) {
-                Task task = new Task("task-" + i, "TEST", null, baseTime + i, 1);
+            for (int i = 0; i < numEvents && running; i++) {
+                String eventType = eventTypes.get(i % eventTypes.size());
+                int priority = eventType.equals("BID") ? 3 : 
+                              eventType.equals("AUCTION") ? 2 : 1;
+                
+                Task task = new Task("event-" + i, eventType, null, baseTime + i, priority);
                 ctx.collect(task);
                 
                 if (i % 1000 == 0) {
-                    Thread.sleep(1); // Small delay every 1000 tasks
+                    Thread.sleep(1); // Simular llegada de eventos
                 }
             }
         }
@@ -83,12 +99,24 @@ public class FlinkSchedulerJob {
         }
     }
     
-    // Procesador FCFS
-    public static class FCFSProcessor extends RichMapFunction<Task, TaskResult> {
+    // Resource Scheduler Processor - TODAS las instancias usan el MISMO algoritmo
+    public static class ResourceSchedulerProcessor extends RichMapFunction<Task, TaskResult> {
+        private final String schedulerType;
+        private transient ResourceScheduler scheduler;
         private transient long taskCounter;
+        
+        public ResourceSchedulerProcessor(String schedulerType) {
+            this.schedulerType = schedulerType;
+        }
         
         @Override
         public void open(Configuration parameters) {
+            // TODAS las instancias paralelas usan el MISMO tipo de scheduler
+            if ("FCFS".equals(schedulerType)) {
+                scheduler = new FCFSResourceScheduler();
+            } else {
+                scheduler = new PriorityResourceScheduler();
+            }
             taskCounter = 0;
         }
         
@@ -96,56 +124,42 @@ public class FlinkSchedulerJob {
         public TaskResult map(Task task) {
             taskCounter++;
             
-            // Simular FCFS: tiempo de espera basado en orden de llegada
-            long waitTime = taskCounter % 40; // 0-39ms
+            // Simular scheduling behavior
+            long waitTime;
+            if ("FCFS".equals(schedulerType)) {
+                waitTime = taskCounter % 40; // FCFS: 0-39ms wait
+            } else {
+                waitTime = taskCounter % 2;  // Priority: 0-1ms wait
+            }
+            
             long startTime = task.getArrivalTime() + waitTime;
-            long completionTime = startTime + 10; // 10ms processing
+            long processingTime = getProcessingTimeByEventType(task.getEventType());
+            long completionTime = startTime + processingTime;
             
             return new TaskResult(
                 task.getTaskId(),
-                "FCFS",
+                schedulerType,
                 task.getArrivalTime(),
                 startTime,
                 completionTime,
                 waitTime,
-                10L
+                processingTime
             );
         }
-    }
-    
-    // Procesador Priority
-    public static class PriorityProcessor extends RichMapFunction<Task, TaskResult> {
-        private transient long taskCounter;
         
-        @Override
-        public void open(Configuration parameters) {
-            taskCounter = 0;
-        }
-        
-        @Override
-        public TaskResult map(Task task) {
-            taskCounter++;
-            
-            // Simular Priority: tiempo de espera mucho menor
-            long waitTime = taskCounter % 2; // 0-1ms
-            long startTime = task.getArrivalTime() + waitTime;
-            long completionTime = startTime + 10; // 10ms processing
-            
-            return new TaskResult(
-                task.getTaskId(),
-                "Priority",
-                task.getArrivalTime(),
-                startTime,
-                completionTime,
-                waitTime,
-                10L
-            );
+        private long getProcessingTimeByEventType(String eventType) {
+            switch (eventType) {
+                case "BID": return 5;      // BIDs son rápidos
+                case "AUCTION": return 15; // AUCTIONs son complejos
+                case "PERSON": return 10;  // PERSONs son normales
+                default: return 10;
+            }
         }
     }
     
     // Recolector de resultados con métricas finales
     public static class ResultCollector implements MapFunction<TaskResult, String> {
-        private final String schedulerName;
+        private final String schedulerType;
         private static volatile long fcfsCount = 0;
         private static volatile long priorityCount = 0;
         private static volatile long fcfsTotalWait = 0;
@@ -157,14 +171,14 @@ public class FlinkSchedulerJob {
         private static volatile long fcfsEndTime = 0;
         private static volatile long priorityEndTime = 0;
         
-        public ResultCollector(String schedulerName) {
-            this.schedulerName = schedulerName;
+        public ResultCollector(String schedulerType) {
+            this.schedulerType = schedulerType;
         }
         
         @Override
         public String map(TaskResult result) {
             synchronized (ResultCollector.class) {
-                if ("FCFS".equals(schedulerName)) {
+                if ("FCFS".equals(schedulerType)) {
                     if (fcfsCount == 0) fcfsStartTime = System.currentTimeMillis();
                     fcfsCount++;
                     fcfsTotalWait += result.waitTime;
@@ -192,10 +206,10 @@ public class FlinkSchedulerJob {
             return result.toString();
         }
         
-        public static void printFinalSummary() {
+        public static void printFinalComparison() {
             System.out.println();
             System.out.println("========================================");
-            System.out.println("       FLINK SCHEDULER COMPARISON      ");
+            System.out.println("       SCHEDULER COMPARISON RESULTS    ");
             System.out.println("========================================");
             System.out.println();
             
