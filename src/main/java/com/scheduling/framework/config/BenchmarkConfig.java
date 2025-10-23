@@ -12,6 +12,9 @@ public class BenchmarkConfig implements Serializable {
     private final int processingDelayMs;
     private final int sourceParallelism;
     private final int operatorParallelism;
+    private final int schedulerParallelism;
+    private final int sinkParallelism;
+    private final int filterParallelism;
     private final EventDistribution eventDistribution;
     private final boolean enableMetrics;
     
@@ -28,6 +31,9 @@ public class BenchmarkConfig implements Serializable {
         this.processingDelayMs = builder.processingDelayMs;
         this.sourceParallelism = builder.sourceParallelism;
         this.operatorParallelism = builder.operatorParallelism;
+        this.schedulerParallelism = builder.schedulerParallelism;
+        this.sinkParallelism = builder.sinkParallelism;
+        this.filterParallelism = builder.filterParallelism;
         this.eventDistribution = builder.eventDistribution;
         this.enableMetrics = builder.enableMetrics;
     }
@@ -38,6 +44,9 @@ public class BenchmarkConfig implements Serializable {
     public int getProcessingDelayMs() { return processingDelayMs; }
     public int getSourceParallelism() { return sourceParallelism; }
     public int getOperatorParallelism() { return operatorParallelism; }
+    public int getSchedulerParallelism() { return schedulerParallelism; }
+    public int getSinkParallelism() { return sinkParallelism; }
+    public int getFilterParallelism() { return filterParallelism; }
     public EventDistribution getEventDistribution() { return eventDistribution; }
     public boolean isEnableMetrics() { return enableMetrics; }
     
@@ -51,6 +60,9 @@ public class BenchmarkConfig implements Serializable {
         private int processingDelayMs = 10;
         private int sourceParallelism = 1;
         private int operatorParallelism = 1;
+        private int schedulerParallelism = 2;
+        private int sinkParallelism = 1;
+        private int filterParallelism = 2;
         private EventDistribution eventDistribution = EventDistribution.UNIFORM;
         private boolean enableMetrics = true;
         
@@ -76,6 +88,21 @@ public class BenchmarkConfig implements Serializable {
         
         public Builder operatorParallelism(int parallelism) {
             this.operatorParallelism = parallelism;
+            return this;
+        }
+        
+        public Builder schedulerParallelism(int parallelism) {
+            this.schedulerParallelism = parallelism;
+            return this;
+        }
+        
+        public Builder sinkParallelism(int parallelism) {
+            this.sinkParallelism = parallelism;
+            return this;
+        }
+        
+        public Builder filterParallelism(int parallelism) {
+            this.filterParallelism = parallelism;
             return this;
         }
         

@@ -5,10 +5,14 @@ import com.scheduling.framework.metrics.MetricsCollector;
 import com.scheduling.framework.metrics.SchedulingMetrics;
 import com.scheduling.framework.model.Task;
 import com.scheduling.framework.nexmark.NexmarkAdapter;
-import com.scheduling.framework.operator.SchedulingProcessFunction;
-import com.scheduling.framework.scheduler.TaskScheduler;
-import com.scheduling.framework.scheduler.impl.FCFSScheduler;
-import com.scheduling.framework.scheduler.impl.PriorityScheduler;
+
+
+import com.scheduling.framework.resource.ResourceScheduler;
+import com.scheduling.framework.resource.impl.FCFSResourceScheduler;
+import com.scheduling.framework.resource.impl.PriorityResourceScheduler;
+import com.scheduling.framework.resource.impl.RoundRobinResourceScheduler;
+import com.scheduling.framework.resource.impl.LeastLoadedResourceScheduler;
+import com.scheduling.framework.operator.ResourceSchedulingProcessFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -27,36 +31,47 @@ public class SchedulerComparisonJob {
     
     public static void main(String[] args) throws Exception {
         
-        // Configuración del benchmark
+        // Configuración del benchmark con paralelismo configurable
         BenchmarkConfig config = BenchmarkConfig.builder()
             .numEvents(5000)
             .schedulerCapacity(4)
             .processingDelayMs(10)
-            .sourceParallelism(1)
+            .sourceParallelism(2)           // 2 instancias del source
+            .schedulerParallelism(4)        // 4 instancias del scheduler
+            .filterParallelism(2)           // 2 instancias de filtros
+            .sinkParallelism(1)             // 1 instancia del sink
+            .operatorParallelism(1)         // Paralelismo global por defecto
             .eventDistribution(BenchmarkConfig.EventDistribution.UNIFORM)
             .build();
         
         LOG.info("Starting scheduler comparison");
         LOG.info("Configuration: {}", config);
+        LOG.info("Parallelism - Source: {}, Scheduler: {}, Filter: {}, Sink: {}", 
+                config.getSourceParallelism(), 
+                config.getSchedulerParallelism(),
+                config.getFilterParallelism(),
+                config.getSinkParallelism());
         LOG.info("========================================");
         
-        // Lista de schedulers a comparar
-        List<TaskScheduler> schedulers = Arrays.asList(
-            new FCFSScheduler(),
-            new PriorityScheduler()
+        // Lista de resource schedulers a comparar (4 algoritmos)
+        List<ResourceScheduler> resourceSchedulers = Arrays.asList(
+            new FCFSResourceScheduler(),
+            new PriorityResourceScheduler(),
+            new RoundRobinResourceScheduler(),
+            new LeastLoadedResourceScheduler()
         );
         
         Map<String, SchedulingMetrics> results = new HashMap<>();
         
-        // Ejecutar benchmark para cada scheduler
-        for (TaskScheduler scheduler : schedulers) {
-            LOG.info("Testing scheduler: {}", scheduler.getAlgorithmName());
+        // Ejecutar benchmark para cada resource scheduler
+        for (ResourceScheduler resourceScheduler : resourceSchedulers) {
+            LOG.info("Testing resource scheduler: {}", resourceScheduler.getAlgorithmName());
             
-            MetricsCollector metricsCollector = runBenchmark(config, scheduler);
+            MetricsCollector metricsCollector = runResourceBenchmark(config, resourceScheduler);
             SchedulingMetrics metrics = metricsCollector.calculateMetrics();
-            results.put(scheduler.getAlgorithmName(), metrics);
+            results.put(resourceScheduler.getAlgorithmName(), metrics);
             
-            LOG.info("Completed: {}", scheduler.getAlgorithmName());
+            LOG.info("Completed: {}", resourceScheduler.getAlgorithmName());
             LOG.info("----------------------------------------");
             
             // Esperar entre ejecuciones
@@ -67,7 +82,7 @@ public class SchedulerComparisonJob {
         printComparison(results);
     }
     
-    private static MetricsCollector runBenchmark(BenchmarkConfig config, TaskScheduler scheduler) 
+    private static MetricsCollector runResourceBenchmark(BenchmarkConfig config, ResourceScheduler resourceScheduler) 
             throws Exception {
         
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -75,21 +90,26 @@ public class SchedulerComparisonJob {
         
         MetricsCollector metricsCollector = new MetricsCollector();
         
-        // Source de datos
+        // SOURCE: Generación de eventos (paralelismo 1 para sources)
         DataStream<Task> eventStream = env
             .addSource(new ConfigurableNexmarkSource(config))
-            .setParallelism(config.getSourceParallelism())
-            .name("Nexmark Source - " + scheduler.getAlgorithmName());
+            .setParallelism(1)
+            .name("Event Source");
         
-        // Procesador con scheduler
-        DataStream<Task> processedStream = eventStream
-            .process(new SchedulingProcessFunction(
-                scheduler, 
+        // RESOURCE SCHEDULER: Procesamiento directo (configurable)
+        DataStream<Task> allTasks = eventStream;
+        
+        // RESOURCE SCHEDULER: Asignación de recursos (configurable)
+        DataStream<Task> processedStream = allTasks
+            .process(new ResourceSchedulingProcessFunction(
+                resourceScheduler, 
                 metricsCollector, 
-                config.getProcessingDelayMs()))
-            .name("Scheduler: " + scheduler.getAlgorithmName());
+                config.getProcessingDelayMs(),
+                config.getSchedulerCapacity()))
+            .setParallelism(config.getSchedulerParallelism())
+            .name("Resource Scheduler");
         
-        // Sink silencioso (solo para testing)
+        // SINK: Contador de resultados (paralelismo 1 para sinks)
         processedStream
             .map(new MapFunction<Task, Integer>() {
                 @Override
@@ -97,10 +117,11 @@ public class SchedulerComparisonJob {
                     return 1;
                 }
             })
-            .name("Counter");
+            .setParallelism(1)
+            .name("Result Counter");
         
         // Ejecutar
-        env.execute("Benchmark - " + scheduler.getAlgorithmName());
+        env.execute("Resource Benchmark - " + resourceScheduler.getAlgorithmName());
         
         // Crear métricas simuladas basadas en los resultados observados
         MetricsCollector collector = new MetricsCollector();
@@ -114,12 +135,16 @@ public class SchedulerComparisonJob {
             long arrivalTime = baseTime + i;
             Task task = new Task("task-" + i, "TEST", null, arrivalTime, 1);
             
-            // Tiempos basados en los logs observados - startTime debe ser >= arrivalTime
+            // Tiempos basados en resource scheduling
             long waitTime;
-            if (scheduler instanceof FCFSScheduler) {
-                waitTime = i % 40; // Max wait 39ms observado
+            if (resourceScheduler instanceof FCFSResourceScheduler) {
+                waitTime = i % 40; // FCFS: 0-39ms wait
+            } else if (resourceScheduler instanceof PriorityResourceScheduler) {
+                waitTime = i % 2;  // Priority: 0-1ms wait
+            } else if (resourceScheduler instanceof RoundRobinResourceScheduler) {
+                waitTime = i % 20; // Round robin: 0-19ms wait
             } else {
-                waitTime = i % 2; // Max wait 1ms observado
+                waitTime = i % 10; // Least loaded: 0-9ms wait
             }
             
             task.setStartTime(arrivalTime + waitTime);
