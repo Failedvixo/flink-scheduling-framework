@@ -1,5 +1,7 @@
 package com.scheduling.framework;
 
+import com.scheduling.framework.config.BenchmarkConfig;
+import com.scheduling.framework.config.GraphConfigurations;
 import com.scheduling.framework.model.Task;
 import com.scheduling.framework.resource.ResourceScheduler;
 import com.scheduling.framework.resource.impl.FCFSResourceScheduler;
@@ -30,19 +32,77 @@ public class FlinkSchedulerJob {
         System.out.println("========================================");
         System.out.println("       TESTING ADAPTIVE SCHEDULER      ");
         System.out.println("========================================");
+        
+        // Opción 1: Usar configuración predefinida (descomenta para usar)
+        // runWithPredefinedConfig();
+        
+        // Opción 2: Usar configuración hardcodeada (actual)
         runAdaptiveSchedulerTest();
         
         // Mostrar resumen final
         AdaptiveResultCollector.printFinalSummary();
     }
     
+    private static void runWithPredefinedConfig() throws Exception {
+        // Cambiar entre: simpleGraph(), scaledGraph(), highLoadGraph()
+        BenchmarkConfig config = GraphConfigurations.scaledGraph();
+        
+        System.out.println("========================================");
+        System.out.println("       PREDEFINED GRAPH CONFIG         ");
+        System.out.println("========================================");
+        System.out.println("Graph Type: Scaled Graph");
+        System.out.println("Events: " + config.getNumEvents());
+        System.out.println("Source Parallelism: " + config.getSourceParallelism());
+        System.out.println("Scheduler Parallelism: " + config.getSchedulerParallelism());
+        System.out.println("Filter Parallelism: " + config.getFilterParallelism());
+        System.out.println("Sink Parallelism: " + config.getSinkParallelism());
+        System.out.println("========================================");
+        
+        runAdaptiveSchedulerWithConfig(config);
+    }
+    
+    private static void runAdaptiveSchedulerWithConfig(BenchmarkConfig config) throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(config.getSchedulerParallelism());
+        
+        DataStream<Task> taskStream = env
+            .addSource(new NexmarkEventSource(config.getNumEvents()))
+            .name("Nexmark Event Generator");
+        
+        DataStream<TaskResult> results = taskStream
+            .keyBy(task -> task.getTaskId().hashCode() % config.getSchedulerParallelism())
+            .map(new AdaptiveSchedulerProcessor())
+            .name("Adaptive Distributed Scheduler");
+        
+        results.map(new AdaptiveResultCollector()).name("Adaptive Result Collector");
+        
+        env.execute("Flink Adaptive Scheduler Test - Predefined Config");
+        Thread.sleep(2000);
+    }
+    
     private static void runAdaptiveSchedulerTest() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setParallelism(4); // 4 instancias paralelas adaptativas
+        
+        // Configuración del grafo actual
+        int parallelism = 4;
+        int numEvents = 10000;
+        
+        System.out.println("========================================");
+        System.out.println("       CURRENT GRAPH CONFIGURATION     ");
+        System.out.println("========================================");
+        System.out.println("Graph Type: Custom Hardcoded (Current)");
+        System.out.println("Events: " + numEvents);
+        System.out.println("Parallelism: " + parallelism);
+        System.out.println("Source Instances: 1");
+        System.out.println("Scheduler Instances: " + parallelism);
+        System.out.println("Sink Instances: " + parallelism);
+        System.out.println("========================================");
+        
+        env.setParallelism(parallelism); // 4 instancias paralelas adaptativas
         
         // SOURCE: Generar eventos Nexmark con carga variable
         DataStream<Task> taskStream = env
-            .addSource(new NexmarkEventSource(10000)) // Más eventos para ver adaptación
+            .addSource(new NexmarkEventSource(numEvents)) // Más eventos para ver adaptación
             .name("Nexmark Event Generator");
         
         // ADAPTIVE SCHEDULING: Cambia scheduler basado en CPU
