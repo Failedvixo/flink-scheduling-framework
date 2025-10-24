@@ -12,6 +12,9 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 
 import java.io.Serializable;
+import java.lang.management.ManagementFactory;
+import java.lang.management.OperatingSystemMXBean;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
@@ -23,45 +26,37 @@ public class FlinkSchedulerJob {
     
     public static void main(String[] args) throws Exception {
         
-        // Ejecutar FCFS primero
+        // Ejecutar Adaptive Scheduler
         System.out.println("========================================");
-        System.out.println("       TESTING FCFS SCHEDULER          ");
+        System.out.println("       TESTING ADAPTIVE SCHEDULER      ");
         System.out.println("========================================");
-        runSchedulerTest("FCFS");
+        runAdaptiveSchedulerTest();
         
-        Thread.sleep(2000); // Pausa entre tests
-        
-        // Ejecutar Priority después
-        System.out.println("\n========================================");
-        System.out.println("       TESTING PRIORITY SCHEDULER      ");
-        System.out.println("========================================");
-        runSchedulerTest("Priority");
-        
-        // Mostrar comparación final
-        ResultCollector.printFinalComparison();
+        // Mostrar resumen final
+        AdaptiveResultCollector.printFinalSummary();
     }
     
-    private static void runSchedulerTest(String schedulerType) throws Exception {
+    private static void runAdaptiveSchedulerTest() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setParallelism(4); // 4 instancias paralelas del MISMO scheduler
+        env.setParallelism(4); // 4 instancias paralelas adaptativas
         
-        // SOURCE: Generar eventos Nexmark
+        // SOURCE: Generar eventos Nexmark con carga variable
         DataStream<Task> taskStream = env
-            .addSource(new NexmarkEventSource(5000))
+            .addSource(new NexmarkEventSource(10000)) // Más eventos para ver adaptación
             .name("Nexmark Event Generator");
         
-        // DISTRIBUTED SCHEDULING: Todas las instancias usan el MISMO algoritmo
+        // ADAPTIVE SCHEDULING: Cambia scheduler basado en CPU
         DataStream<TaskResult> results = taskStream
-            .keyBy(task -> task.getTaskId().hashCode() % 4) // Distribuir entre 4 instancias
-            .map(new ResourceSchedulerProcessor(schedulerType)) // Mismo scheduler en todas
-            .name(schedulerType + " Distributed Scheduler");
+            .keyBy(task -> task.getTaskId().hashCode() % 4)
+            .map(new AdaptiveSchedulerProcessor())
+            .name("Adaptive Distributed Scheduler");
         
         // SINK: Recolectar resultados
-        results.map(new ResultCollector(schedulerType)).name("Result Collector");
+        results.map(new AdaptiveResultCollector()).name("Adaptive Result Collector");
         
-        env.execute("Flink " + schedulerType + " Test");
+        env.execute("Flink Adaptive Scheduler Test");
         
-        Thread.sleep(1000); // Esperar procesamiento
+        Thread.sleep(2000); // Esperar procesamiento
     }
     
     // Source que genera eventos tipo Nexmark
@@ -99,38 +94,41 @@ public class FlinkSchedulerJob {
         }
     }
     
-    // Resource Scheduler Processor - TODAS las instancias usan el MISMO algoritmo
-    public static class ResourceSchedulerProcessor extends RichMapFunction<Task, TaskResult> {
-        private final String schedulerType;
-        private transient ResourceScheduler scheduler;
+    // Adaptive Scheduler Processor - Cambia scheduler basado en carga de CPU
+    public static class AdaptiveSchedulerProcessor extends RichMapFunction<Task, TaskResult> {
+        private transient ResourceScheduler fcfsScheduler;
+        private transient ResourceScheduler priorityScheduler;
         private transient long taskCounter;
-        
-        public ResourceSchedulerProcessor(String schedulerType) {
-            this.schedulerType = schedulerType;
-        }
+        private transient OperatingSystemMXBean osBean;
+        private transient String currentSchedulerType;
+        private transient long lastCpuCheckTime;
+        private transient int schedulerSwitches;
+        private static volatile List<SchedulerSwitch> switchHistory = new ArrayList<>();
         
         @Override
         public void open(Configuration parameters) {
-            // TODAS las instancias paralelas usan el MISMO tipo de scheduler
-            if ("FCFS".equals(schedulerType)) {
-                scheduler = new FCFSResourceScheduler();
-            } else {
-                scheduler = new PriorityResourceScheduler();
-            }
+            fcfsScheduler = new FCFSResourceScheduler();
+            priorityScheduler = new PriorityResourceScheduler();
+            osBean = ManagementFactory.getOperatingSystemMXBean();
+            currentSchedulerType = "FCFS"; // Empezar con FCFS
             taskCounter = 0;
+            lastCpuCheckTime = System.currentTimeMillis();
+            schedulerSwitches = 0;
         }
         
         @Override
         public TaskResult map(Task task) {
             taskCounter++;
             
-            // Simular scheduling behavior
-            long waitTime;
-            if ("FCFS".equals(schedulerType)) {
-                waitTime = taskCounter % 40; // FCFS: 0-39ms wait
-            } else {
-                waitTime = taskCounter % 2;  // Priority: 0-1ms wait
+            // Verificar CPU cada 100 tareas o cada 3 segundos
+            long currentTime = System.currentTimeMillis();
+            if (taskCounter % 100 == 0 || (currentTime - lastCpuCheckTime) > 3000) {
+                checkAndSwitchScheduler();
+                lastCpuCheckTime = currentTime;
             }
+            
+            // Calcular wait time basado en scheduler actual y carga
+            long waitTime = calculateAdaptiveWaitTime();
             
             long startTime = task.getArrivalTime() + waitTime;
             long processingTime = getProcessingTimeByEventType(task.getEventType());
@@ -138,13 +136,73 @@ public class FlinkSchedulerJob {
             
             return new TaskResult(
                 task.getTaskId(),
-                schedulerType,
+                currentSchedulerType + "(Adaptive)",
                 task.getArrivalTime(),
                 startTime,
                 completionTime,
                 waitTime,
                 processingTime
             );
+        }
+        
+        private void checkAndSwitchScheduler() {
+            double cpuUsage = getSimulatedCpuUsage();
+            String previousScheduler = currentSchedulerType;
+            
+            // Cambiar scheduler basado en carga de CPU
+            if (cpuUsage > 90.0 && "FCFS".equals(currentSchedulerType)) {
+                currentSchedulerType = "Priority";
+                schedulerSwitches++;
+                synchronized (AdaptiveSchedulerProcessor.class) {
+                    switchHistory.add(new SchedulerSwitch(taskCounter, cpuUsage, "FCFS", "Priority", System.currentTimeMillis()));
+                }
+                System.out.println(String.format(
+                    "[ADAPTIVE] CPU: %.1f%% - Switching to Priority Scheduler (Switch #%d)", 
+                    cpuUsage, schedulerSwitches));
+            } else if (cpuUsage < 50.0 && "Priority".equals(currentSchedulerType)) {
+                currentSchedulerType = "FCFS";
+                schedulerSwitches++;
+                synchronized (AdaptiveSchedulerProcessor.class) {
+                    switchHistory.add(new SchedulerSwitch(taskCounter, cpuUsage, "Priority", "FCFS", System.currentTimeMillis()));
+                }
+                System.out.println(String.format(
+                    "[ADAPTIVE] CPU: %.1f%% - Switching to FCFS Scheduler (Switch #%d)", 
+                    cpuUsage, schedulerSwitches));
+            }
+            
+            // Log CPU usage periodically
+            if (taskCounter % 500 == 0) {
+                System.out.println(String.format(
+                    "[MONITOR] Task: %d, CPU: %.1f%%, Scheduler: %s, Switches: %d", 
+                    taskCounter, cpuUsage, currentSchedulerType, schedulerSwitches));
+            }
+        }
+        
+        private double getSimulatedCpuUsage() {
+            // Simular carga de CPU basada en número de tareas procesadas
+            long cyclePosition = taskCounter % 2000;
+            
+            if (cyclePosition < 500) {
+                return 30.0 + (cyclePosition * 0.1); // Carga baja: 30-80%
+            } else if (cyclePosition < 1000) {
+                return 80.0 + ((cyclePosition - 500) * 0.02); // Carga alta: 80-90%
+            } else if (cyclePosition < 1200) {
+                return 90.0 + ((cyclePosition - 1000) * 0.025); // Pico: 90-95%
+            } else {
+                return 95.0 - ((cyclePosition - 1200) * 0.08); // Descenso: 95-30%
+            }
+        }
+        
+        private long calculateAdaptiveWaitTime() {
+            double cpuUsage = getSimulatedCpuUsage();
+            
+            if ("FCFS".equals(currentSchedulerType)) {
+                // FCFS: más wait time cuando hay alta carga
+                return (long)(taskCounter % 40 * (1 + cpuUsage / 100.0));
+            } else {
+                // Priority: menos wait time, especialmente bajo alta carga
+                return Math.max(0, (long)(taskCounter % 2 * (1 - cpuUsage / 200.0)));
+            }
         }
         
         private long getProcessingTimeByEventType(String eventType) {
@@ -157,7 +215,105 @@ public class FlinkSchedulerJob {
         }
     }
     
-    // Recolector de resultados con métricas finales
+    // Recolector de resultados para scheduler adaptativo
+    public static class AdaptiveResultCollector implements MapFunction<TaskResult, String> {
+        private static volatile long totalCount = 0;
+        private static volatile long totalWait = 0;
+        private static volatile long totalExecution = 0;
+        private static volatile long startTime = 0;
+        private static volatile long endTime = 0;
+        
+        @Override
+        public String map(TaskResult result) {
+            synchronized (AdaptiveResultCollector.class) {
+                if (totalCount == 0) startTime = System.currentTimeMillis();
+                totalCount++;
+                totalWait += result.waitTime;
+                totalExecution += result.executionTime;
+                endTime = System.currentTimeMillis();
+                
+                if (totalCount % 1000 == 0) {
+                    double avgWait = (double) totalWait / totalCount;
+                    System.out.println("Adaptive - Processed: " + totalCount + ", Avg Wait: " + String.format("%.2f", avgWait) + "ms");
+                }
+            }
+            return result.toString();
+        }
+        
+        public static void printFinalSummary() {
+            System.out.println();
+            System.out.println("========================================");
+            System.out.println("       ADAPTIVE SCHEDULER RESULTS      ");
+            System.out.println("========================================");
+            
+            double avgWait = totalCount > 0 ? (double) totalWait / totalCount : 0;
+            double avgExecution = totalCount > 0 ? (double) totalExecution / totalCount : 0;
+            double avgTotal = avgWait + avgExecution;
+            long duration = endTime - startTime;
+            double throughput = duration > 0 ? (totalCount * 1000.0) / duration : 0;
+            
+            System.out.printf("Tasks Processed: %d%n", totalCount);
+            System.out.printf("Avg Wait Time: %.2f ms%n", avgWait);
+            System.out.printf("Avg Total Time: %.2f ms%n", avgTotal);
+            System.out.printf("Throughput: %.2f tasks/sec%n", throughput);
+            
+            // Mostrar tabla de cambios de scheduler
+            printSchedulerSwitchSummary();
+            
+            System.out.println("========================================");
+        }
+        
+        private static void printSchedulerSwitchSummary() {
+            System.out.println();
+            System.out.println("========================================");
+            System.out.println("       SCHEDULER SWITCH SUMMARY        ");
+            System.out.println("========================================");
+            
+            if (AdaptiveSchedulerProcessor.switchHistory.isEmpty()) {
+                System.out.println("No scheduler switches occurred during execution.");
+                return;
+            }
+            
+            System.out.printf("%-8s | %-8s | %-8s | %-12s | %-12s | %-10s%n", 
+                "Switch#", "Task#", "CPU%", "From", "To", "Timestamp");
+            System.out.println("---------|----------|----------|--------------|--------------|----------");
+            
+            for (int i = 0; i < AdaptiveSchedulerProcessor.switchHistory.size(); i++) {
+                SchedulerSwitch sw = AdaptiveSchedulerProcessor.switchHistory.get(i);
+                System.out.printf("%-8d | %-8d | %-8.1f | %-12s | %-12s | %-10d%n",
+                    i + 1, sw.taskNumber, sw.cpuUsage, sw.fromScheduler, sw.toScheduler, 
+                    sw.timestamp % 100000); // Solo últimos 5 dígitos del timestamp
+            }
+            
+            System.out.println();
+            System.out.printf("Total Switches: %d%n", AdaptiveSchedulerProcessor.switchHistory.size());
+            
+            // Estadísticas de uso por scheduler
+            long fcfsTime = 0, priorityTime = 0;
+            String currentScheduler = "FCFS";
+            long lastTime = AdaptiveSchedulerProcessor.switchHistory.isEmpty() ? 0 : 
+                AdaptiveSchedulerProcessor.switchHistory.get(0).timestamp;
+            
+            for (SchedulerSwitch sw : AdaptiveSchedulerProcessor.switchHistory) {
+                long duration = sw.timestamp - lastTime;
+                if ("FCFS".equals(currentScheduler)) {
+                    fcfsTime += duration;
+                } else {
+                    priorityTime += duration;
+                }
+                currentScheduler = sw.toScheduler;
+                lastTime = sw.timestamp;
+            }
+            
+            long totalTime = fcfsTime + priorityTime;
+            if (totalTime > 0) {
+                System.out.printf("FCFS Usage: %.1f%% | Priority Usage: %.1f%%%n", 
+                    (fcfsTime * 100.0) / totalTime, (priorityTime * 100.0) / totalTime);
+            }
+        }
+    }
+    
+    // Recolector de resultados original (no usado en adaptive)
     public static class ResultCollector implements MapFunction<TaskResult, String> {
         private final String schedulerType;
         private static volatile long fcfsCount = 0;
@@ -277,6 +433,26 @@ public class FlinkSchedulerJob {
         public String toString() {
             return String.format("%s[%s]: wait=%dms, exec=%dms, total=%dms", 
                 scheduler, taskId, waitTime, executionTime, waitTime + executionTime);
+        }
+    }
+    
+    // Clase para registrar cambios de scheduler
+    public static class SchedulerSwitch implements Serializable {
+        private static final long serialVersionUID = 1L;
+        
+        public final long taskNumber;
+        public final double cpuUsage;
+        public final String fromScheduler;
+        public final String toScheduler;
+        public final long timestamp;
+        
+        public SchedulerSwitch(long taskNumber, double cpuUsage, String fromScheduler, 
+                              String toScheduler, long timestamp) {
+            this.taskNumber = taskNumber;
+            this.cpuUsage = cpuUsage;
+            this.fromScheduler = fromScheduler;
+            this.toScheduler = toScheduler;
+            this.timestamp = timestamp;
         }
     }
 }

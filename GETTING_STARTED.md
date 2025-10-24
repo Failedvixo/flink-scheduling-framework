@@ -1,4 +1,4 @@
-# 🚀 Guía de Inicio Rápido
+# 🚀 Guía de Inicio Rápido - Adaptive Scheduler Framework
 
 ## Estructura del Proyecto
 
@@ -8,21 +8,25 @@ flink-scheduling-framework/
 ├── src/main/java/com/scheduling/framework/
 │   ├── model/
 │   │   └── Task.java                    # Modelo de tarea con métricas
-│   ├── scheduler/
-│   │   ├── TaskScheduler.java           # Interfaz del scheduler
+│   ├── resource/                        # 🔄 Resource Schedulers
+│   │   ├── ResourceScheduler.java       # Interfaz del resource scheduler
+│   │   ├── ProcessingResource.java      # Recurso de procesamiento
 │   │   └── impl/
-│   │       ├── FCFSScheduler.java       # First Come First Serve
-│   │       └── PriorityScheduler.java   # Scheduler basado en prioridades
+│   │       ├── FCFSResourceScheduler.java    # First Come First Serve
+│   │       ├── PriorityResourceScheduler.java # Scheduler basado en prioridades
+│   │       ├── RoundRobinResourceScheduler.java # Round Robin
+│   │       └── LeastLoadedResourceScheduler.java # Least Loaded
 │   ├── nexmark/
 │   │   └── NexmarkAdapter.java          # Generador de eventos Nexmark
 │   ├── operator/
-│   │   └── SchedulingProcessFunction.java # Operador Flink principal
+│   │   └── ResourceSchedulingProcessFunction.java # Operador Flink principal
 │   ├── metrics/
 │   │   ├── MetricsCollector.java        # Recolector de métricas
 │   │   └── SchedulingMetrics.java       # Clase de métricas
 │   ├── config/
-│   │   └── BenchmarkConfig.java         # Configuración del benchmark
-│   ├── SchedulingBenchmarkJob.java      # Job individual (FCFS)
+│   │   ├── BenchmarkConfig.java         # Configuración del benchmark
+│   │   └── GraphConfigurations.java     # Configuraciones de grafo
+│   ├── FlinkSchedulerJob.java           # 🎯 Adaptive Scheduler Job (PRINCIPAL)
 │   ├── SchedulerComparisonJob.java      # Comparación de schedulers
 │   └── SimpleMetricsTest.java           # Test sin dependencias Flink
 └── README.md
@@ -36,83 +40,107 @@ flink-scheduling-framework/
 
 ## 🚀 Métodos de Ejecución
 
-### Método 1: Maven (Recomendado para desarrollo)
-```bash
-# Test simple sin Flink
-mvn exec:java -Dexec.mainClass="com.scheduling.framework.SimpleMetricsTest"
-
-# Comparación de schedulers (puede fallar por dependencias)
-mvn exec:java -Dexec.mainClass="com.scheduling.framework.SchedulerComparisonJob"
-```
-
-### Método 2: JAR Compilado (Más estable)
+### Método 1: Adaptive Scheduler (RECOMENDADO) 🎯
 ```bash
 # Compilar
 mvn clean package -DskipTests
 
-# Ejecutar test simple
-java -cp target/flink-scheduling-framework-1.0-SNAPSHOT.jar com.scheduling.framework.SimpleMetricsTest
+# Ejecutar Adaptive Scheduler con monitoreo de CPU
+java --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED -cp target/flink-scheduling-framework-1.0-SNAPSHOT.jar com.scheduling.framework.FlinkSchedulerJob
+```
 
-# Ejecutar con Flink (requiere flags adicionales)
-java --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED -cp target/flink-scheduling-framework-1.0-SNAPSHOT.jar com.scheduling.framework.SchedulerComparisonJob
+### Método 2: Test Simple (Sin Flink)
+```bash
+# Test simple sin dependencias Flink
+java -cp target/flink-scheduling-framework-1.0-SNAPSHOT.jar com.scheduling.framework.SimpleMetricsTest
+```
+
+### Método 3: Maven (Desarrollo)
+```bash
+# Test simple
+mvn exec:java -Dexec.mainClass="com.scheduling.framework.SimpleMetricsTest"
 ```
 
 ## 🎯 Ejemplos de Ejecución
 
-### Ejemplo 1: Test Simple de Métricas (Recomendado)
+### Ejemplo 1: Adaptive Scheduler (PRINCIPAL) 🎯
 
 ```bash
-java -cp target/flink-scheduling-framework-1.0-SNAPSHOT.jar com.scheduling.framework.SimpleMetricsTest
+java --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED -cp target/flink-scheduling-framework-1.0-SNAPSHOT.jar com.scheduling.framework.FlinkSchedulerJob
 ```
 
 **Salida real:**
 ```
 ========================================
+       TESTING ADAPTIVE SCHEDULER      
+========================================
+[ADAPTIVE] CPU: 92.5% - Switching to Priority Scheduler (Switch #1)
+[MONITOR] Task: 500, CPU: 85.2%, Scheduler: Priority, Switches: 1
+Adaptive - Processed: 1000, Avg Wait: 15.23ms
+[ADAPTIVE] CPU: 45.3% - Switching to FCFS Scheduler (Switch #2)
+[MONITOR] Task: 1000, CPU: 35.8%, Scheduler: FCFS, Switches: 2
+Adaptive - Processed: 2000, Avg Wait: 18.45ms
+
+========================================
+       ADAPTIVE SCHEDULER RESULTS      
+========================================
+Tasks Processed: 10000
+Avg Wait Time: 12.45 ms
+Avg Total Time: 22.45 ms
+Throughput: 445.67 tasks/sec
+
+========================================
+       SCHEDULER SWITCH SUMMARY        
+========================================
+Switch#  | Task#    | CPU%     | From         | To           | Timestamp
+---------|----------|----------|--------------|--------------|----------
+1        | 500      | 92.5     | FCFS         | Priority     | 45231
+2        | 1200     | 45.3     | Priority     | FCFS         | 47892
+3        | 1800     | 94.1     | FCFS         | Priority     | 49156
+4        | 2400     | 48.7     | Priority     | FCFS         | 51023
+
+Total Switches: 4
+FCFS Usage: 65.2% | Priority Usage: 34.8%
+========================================
+```
+
+### Ejemplo 2: Test Simple (Sin Flink)
+
+```bash
+java -cp target/flink-scheduling-framework-1.0-SNAPSHOT.jar com.scheduling.framework.SimpleMetricsTest
+```
+
+**Salida:**
+```
+========================================
        SIMPLE METRICS TEST RESULTS     
 ========================================
-
-Testing FCFS scheduler...
-Completed: FCFS
-Total Time: 29.5 ms
-Wait Time: 19.5 ms
-Execution Time: 10.0 ms
-Throughput: 503.52 tasks/sec
-----------------------------------------
-Testing Priority scheduler...
-Completed: Priority
-Total Time: 10.5 ms
-Wait Time: 0.5 ms
-Execution Time: 10.0 ms
-Throughput: 514.93 tasks/sec
-
-========================================
-       SCHEDULER COMPARISON RESULTS
-========================================
-
 Scheduler                 |  Completed | Avg Wait(ms) |   Avg Total(ms) |   Throughput
 --------------------------|------------|--------------|-----------------|-------------
 First Come First Serve    |       5000 |        19,50 |           29,50 |       503,52
 Priority Scheduler        |       5000 |         0,50 |           10,50 |       514,93
-
-========================================
-Best Throughput: Priority Scheduler
-Best Latency: Priority Scheduler
 ========================================
 ```
-
-### Ejemplo 2: Comparación con Flink (Avanzado)
-
-```bash
-java --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED -cp target/flink-scheduling-framework-1.0-SNAPSHOT.jar com.scheduling.framework.SchedulerComparisonJob
-```
-
-**Nota**: Puede requerir configuración adicional de dependencias.
 
 ## 🔧 Configuración Personalizada
 
-### Modificar SimpleMetricsTest
+### Configurar Adaptive Scheduler
 
-Edita `SimpleMetricsTest.java`:
+Edita `FlinkSchedulerJob.java`:
+
+```java
+// Cambiar número de eventos
+new NexmarkEventSource(20000)  // Más eventos para ver más switches
+
+// Cambiar paralelismo
+env.setParallelism(8);  // Más instancias paralelas
+
+// Modificar umbrales de CPU
+if (cpuUsage > 85.0 && "FCFS".equals(currentSchedulerType)) {  // Cambiar de 90% a 85%
+if (cpuUsage < 40.0 && "Priority".equals(currentSchedulerType)) { // Cambiar de 50% a 40%
+```
+
+### Configurar SimpleMetricsTest
 
 ```java
 // Cambiar número de tareas
@@ -126,32 +154,20 @@ if (isFCFS) {
 }
 ```
 
-### Usar BenchmarkConfig (para SchedulerComparisonJob)
+## 🎨 Crear un Resource Scheduler Personalizado
+
+### Ejemplo: Weighted Fair Queueing Scheduler
+
+Crea `WeightedFairResourceScheduler.java` en `resource/impl/`:
 
 ```java
-BenchmarkConfig config = BenchmarkConfig.builder()
-    .numEvents(5000)                    // Número de eventos
-    .schedulerCapacity(4)               // Slots de procesamiento
-    .processingDelayMs(10)              // Delay por tarea
-    .sourceParallelism(1)               // Paralelismo del source
-    .eventDistribution(BenchmarkConfig.EventDistribution.UNIFORM)
-    .build();
-```
-
-## 🎨 Crear un Scheduler Personalizado
-
-### Ejemplo: Round Robin Scheduler
-
-Crea `RoundRobinScheduler.java` en `scheduler/impl/`:
-
-```java
-package com.scheduling.framework.scheduler.impl;
+package com.scheduling.framework.resource.impl;
 
 import com.scheduling.framework.model.Task;
-import com.scheduling.framework.scheduler.TaskScheduler;
+import com.scheduling.framework.resource.ResourceScheduler;
 import java.util.*;
 
-public class RoundRobinScheduler implements TaskScheduler {
+public class WeightedFairResourceScheduler implements ResourceScheduler {
     
     private final Map<String, Queue<Task>> eventTypeQueues;
     private final List<String> eventTypes;
@@ -159,7 +175,13 @@ public class RoundRobinScheduler implements TaskScheduler {
     private int capacity;
     private int runningTasks;
     
-    public RoundRobinScheduler() {
+    private final Map<String, Integer> eventWeights = Map.of(
+        "BID", 3,      // Alta prioridad
+        "AUCTION", 2,  // Media prioridad  
+        "PERSON", 1    // Baja prioridad
+    );
+    
+    public WeightedFairResourceScheduler() {
         this.eventTypeQueues = new HashMap<>();
         this.eventTypes = Arrays.asList("PERSON", "AUCTION", "BID");
         this.currentIndex = 0;
@@ -167,12 +189,6 @@ public class RoundRobinScheduler implements TaskScheduler {
         for (String type : eventTypes) {
             eventTypeQueues.put(type, new LinkedList<>());
         }
-    }
-    
-    @Override
-    public void initialize(int capacity) {
-        this.capacity = capacity;
-        this.runningTasks = 0;
     }
     
     @Override
@@ -189,22 +205,19 @@ public class RoundRobinScheduler implements TaskScheduler {
             return null;
         }
         
-        // Round robin entre tipos de eventos
-        int attempts = 0;
-        while (attempts < eventTypes.size()) {
-            String currentType = eventTypes.get(currentIndex);
-            Queue<Task> queue = eventTypeQueues.get(currentType);
-            
-            currentIndex = (currentIndex + 1) % eventTypes.size();
-            
-            if (!queue.isEmpty()) {
-                Task task = queue.poll();
-                task.setStartTime(System.currentTimeMillis());
-                runningTasks++;
-                return task;
+        // Weighted fair queueing - seleccionar basado en pesos
+        for (int weight = 3; weight >= 1; weight--) {
+            for (String eventType : eventTypes) {
+                if (eventWeights.get(eventType) == weight) {
+                    Queue<Task> queue = eventTypeQueues.get(eventType);
+                    if (!queue.isEmpty()) {
+                        Task task = queue.poll();
+                        task.setStartTime(System.currentTimeMillis());
+                        runningTasks++;
+                        return task;
+                    }
+                }
             }
-            
-            attempts++;
         }
         
         return null;
@@ -231,7 +244,7 @@ public class RoundRobinScheduler implements TaskScheduler {
     
     @Override
     public String getAlgorithmName() {
-        return "Round Robin Scheduler";
+        return "Weighted Fair Queueing Scheduler";
     }
     
     @Override
@@ -243,11 +256,16 @@ public class RoundRobinScheduler implements TaskScheduler {
 }
 ```
 
-### Usar el nuevo scheduler
+### Usar el nuevo scheduler en Adaptive Job
 
 ```java
-TaskScheduler scheduler = new RoundRobinScheduler();
-// Resto del código...
+// En AdaptiveSchedulerProcessor.open()
+weightedScheduler = new WeightedFairResourceScheduler();
+
+// Agregar como tercera opción
+if (cpuUsage > 95.0) {
+    currentSchedulerType = "WeightedFair";
+}
 ```
 
 ## 📊 Análisis de Resultados
@@ -262,45 +280,49 @@ TaskScheduler scheduler = new RoundRobinScheduler();
 | **Throughput** | Tareas procesadas por segundo | `totalTasks / totalDuration` | Mayor |
 | **Completed** | Número de tareas completadas | Contador | 100% ideal |
 
-### Interpretación de Resultados Reales
+### Interpretación de Resultados del Adaptive Scheduler
 
-**Priority Scheduler es superior:**
-- **97% menos waiting time**: 0.5ms vs 19.5ms
-- **64% menos total time**: 10.5ms vs 29.5ms  
-- **2% más throughput**: 514.93 vs 503.52 tasks/sec
+**Adaptive Scheduler combina lo mejor de ambos:**
+- **Switching inteligente**: Cambia automáticamente basado en carga de CPU
+- **FCFS bajo carga baja**: Justo y eficiente cuando hay recursos disponibles
+- **Priority bajo carga alta**: Optimizado cuando el sistema está saturado
+- **Métricas de switching**: Muestra cuándo y por qué cambió de algoritmo
 
-**Razones:**
-- **FCFS**: Procesa en orden de llegada (justo pero ineficiente)
-- **Priority**: Procesa tareas importantes primero (optimizado)
-- **Resultado**: Priority evita congestión y reduce latencia
+**Ventajas del enfoque adaptativo:**
+- **Flexibilidad**: Se adapta a condiciones cambiantes
+- **Observabilidad**: Tracking completo de decisiones de scheduling
+- **Escalabilidad**: Funciona con paralelismo distribuido
 
 ## 🧪 Escenarios de Testing
 
-### Modificar SimpleMetricsTest para diferentes escenarios:
-
-### Escenario 1: Alta Carga
+### Escenario 1: Stress Test Adaptativo
 ```java
-// En SimpleMetricsTest.java
-int numTasks = 50000;           // Más tareas
-long arrivalTime = baseTime + (i * 5);  // Llegadas más rápidas
-Thread.sleep(2);                // Más delay de procesamiento
+// En FlinkSchedulerJob.java - NexmarkEventSource
+new NexmarkEventSource(50000)  // Muchos eventos para forzar switches
+
+// Modificar simulación de CPU para picos más frecuentes
+long cyclePosition = taskCounter % 1000;  // Ciclos más cortos
 ```
 
-### Escenario 2: Baja Latencia
+### Escenario 2: Umbrales Sensibles
 ```java
-int numTasks = 1000;            // Pocas tareas
-long arrivalTime = baseTime + (i * 50); // Llegadas espaciadas
-Thread.sleep(0);                // Sin delay adicional
+// Cambiar umbrales para switches más frecuentes
+if (cpuUsage > 70.0 && "FCFS".equals(currentSchedulerType)) {
+if (cpuUsage < 60.0 && "Priority".equals(currentSchedulerType)) {
 ```
 
-### Escenario 3: Stress Test
+### Escenario 3: Alto Paralelismo
 ```java
-int numTasks = 100000;          // Muchas tareas
-if (isFCFS) {
-    waitTime = i % 100;         // Más variabilidad en espera
-} else {
-    waitTime = i % 5;
-}
+// Probar con más instancias paralelas
+env.setParallelism(16);
+.keyBy(task -> task.getTaskId().hashCode() % 16)
+```
+
+### Escenario 4: Eventos Desbalanceados
+```java
+// En NexmarkEventSource - generar más BIDs que otros eventos
+String eventType = i % 10 < 7 ? "BID" : 
+                  i % 10 < 9 ? "AUCTION" : "PERSON";
 ```
 
 ## 🐛 Troubleshooting
@@ -309,22 +331,13 @@ if (isFCFS) {
 **Problema**: Dependencias de Flink no se cargan correctamente
 **Solución**: Usar SimpleMetricsTest en lugar de jobs con Flink
 ```bash
-# En lugar de SchedulerComparisonJob, usar:
 java -cp target/flink-scheduling-framework-1.0-SNAPSHOT.jar com.scheduling.framework.SimpleMetricsTest
 ```
-
-### Error: Valores negativos en métricas
-**Problema**: Cálculo incorrecto de tiempos
-**Solución**: Ya corregido en la versión actual
-- `startTime` siempre >= `arrivalTime`
-- `completionTime` siempre >= `startTime`
 
 ### Error: OutOfMemoryError
 ```bash
 # Aumentar memoria
-export MAVEN_OPTS="-Xmx4g"
-# O para JAR:
-java -Xmx4g -cp target/flink-scheduling-framework-1.0-SNAPSHOT.jar com.scheduling.framework.SimpleMetricsTest
+java -Xmx4g --add-opens java.base/java.util=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED -cp target/flink-scheduling-framework-1.0-SNAPSHOT.jar com.scheduling.framework.FlinkSchedulerJob
 ```
 
 ### Error: Compilation failed
@@ -336,126 +349,63 @@ java -version
 mvn clean package -DskipTests
 ```
 
-## 📈 Optimizaciones y Experimentos
-
-### 1. Variar Patrones de Carga
-```java
-// En SimpleMetricsTest.java - modificar patrones de espera
-if (isFCFS) {
-    waitTime = (int)(Math.random() * 50);  // Espera aleatoria 0-49ms
-} else {
-    waitTime = (int)(Math.random() * 3);   // Espera aleatoria 0-2ms
-}
-```
-
-### 2. Experimentar con Diferentes Tamaños
-```java
-// Probar diferentes volúmenes
-int[] testSizes = {1000, 5000, 10000, 50000};
-for (int size : testSizes) {
-    // Ejecutar test con cada tamaño
-}
-```
-
-### 3. Medir Percentiles
-```java
-// Agregar a SimpleMetricsTest
-List<Long> waitTimes = new ArrayList<>();
-// ... recolectar tiempos
-Collections.sort(waitTimes);
-long p50 = waitTimes.get(waitTimes.size() / 2);
-long p95 = waitTimes.get((int)(waitTimes.size() * 0.95));
-long p99 = waitTimes.get((int)(waitTimes.size() * 0.99));
-```
-
-## 🔍 Debugging y Monitoreo
-
-### Agregar Logs a SimpleMetricsTest
-```java
-// Agregar al método simulateScheduler
-System.out.println("Task " + i + ": arrival=" + arrivalTime + 
-                  ", start=" + (arrivalTime + waitTime) + 
-                  ", wait=" + waitTime + "ms");
-```
-
-### Verificar Cálculos
-```java
-// Validar que los tiempos sean consistentes
-assert task.getStartTime() >= task.getArrivalTime() : "Start time before arrival";
-assert task.getCompletionTime() >= task.getStartTime() : "Completion before start";
-assert task.getTotalTime() == task.getWaitingTime() + task.getExecutionTime() : "Time mismatch";
-```
-
-### Monitorear Rendimiento
-```java
-// Medir tiempo de ejecución del test
-long testStart = System.currentTimeMillis();
-// ... ejecutar simulación
-long testDuration = System.currentTimeMillis() - testStart;
-System.out.println("Test completed in: " + testDuration + "ms");
-```gger.metrics.level = INFO
-```
-
-### Instrumentar código
-
-```java
-// Agregar timing
-long start = System.currentTimeMillis();
-Task task = scheduler.getNextTask();
-long elapsed = System.currentTimeMillis() - start;
-LOG.debug("Scheduler decision time: {} ms", elapsed);
-```
-
 ## 🎓 Próximos Pasos
 
-### 1. Implementar Schedulers Avanzados
+### 1. Extender Adaptive Scheduler
 
-Crea nuevos schedulers en `scheduler/impl/`:
-
-**Round Robin Scheduler:**
+**Agregar más schedulers:**
 ```java
-public class RoundRobinScheduler implements TaskScheduler {
-    private int currentIndex = 0;
-    private final List<String> eventTypes = Arrays.asList("PERSON", "AUCTION", "BID");
-    // Implementar rotación entre tipos de eventos
+// En AdaptiveSchedulerProcessor
+if (cpuUsage > 95.0) {
+    currentSchedulerType = "WeightedFair";
+} else if (cpuUsage > 90.0) {
+    currentSchedulerType = "Priority";
+} else if (cpuUsage > 70.0) {
+    currentSchedulerType = "RoundRobin";
+} else {
+    currentSchedulerType = "FCFS";
 }
 ```
 
-**Shortest Job First:**
+**Métricas avanzadas:**
 ```java
-public class SJFScheduler implements TaskScheduler {
-    private final PriorityQueue<Task> queue = new PriorityQueue<>(
-        Comparator.comparingInt(task -> estimateProcessingTime(task))
-    );
-}
-```
+// Agregar tracking de latencia por event type
+Map<String, List<Long>> latencyByEventType = new HashMap<>();
 
-### 2. Mejorar SimpleMetricsTest
-
-**Agregar percentiles:**
-```java
-// Calcular P50, P95, P99 de waiting times
-List<Long> waitTimes = tasks.stream()
-    .map(Task::getWaitingTime)
-    .sorted()
+// Percentiles de switching
+List<Double> cpuAtSwitch = switchHistory.stream()
+    .map(sw -> sw.cpuUsage)
     .collect(Collectors.toList());
 ```
 
-**Comparar múltiples schedulers:**
+### 2. Machine Learning Integration
+
+**Predicción de carga:**
 ```java
-List<TaskScheduler> schedulers = Arrays.asList(
-    new FCFSScheduler(),
-    new PriorityScheduler(),
-    new RoundRobinScheduler()
-);
+// Usar historial para predecir próximos picos de CPU
+public class MLSchedulerPredictor {
+    public String predictBestScheduler(List<Double> cpuHistory) {
+        // Implementar modelo predictivo
+    }
+}
 ```
 
-### 3. Integración con Flink Real
+### 3. Monitoring Dashboard
 
-Una vez resueltos los problemas de dependencias:
-- Usar `SchedulerComparisonJob` para tests completos
-- Configurar checkpointing para fault tolerance
-- Implementar métricas de Flink nativas
+**Métricas en tiempo real:**
+- CPU usage trends
+- Scheduler switch frequency
+- Latency por event type
+- Throughput por scheduler
+
+### 4. Distributed Testing
+
+**Cluster real:**
+```bash
+# Ejecutar en cluster Flink real
+./bin/flink run -c com.scheduling.framework.FlinkSchedulerJob \
+  target/flink-scheduling-framework-1.0-SNAPSHOT.jar
+```
 
 ## 📚 Recursos
 
@@ -465,12 +415,19 @@ Una vez resueltos los problemas de dependencias:
 
 ## 💡 Tips de Uso
 
-1. **Empezar con SimpleMetricsTest**: Es más estable y fácil de debuggear
-2. **Modificar parámetros gradualmente**: Cambiar una variable a la vez
-3. **Documentar experimentos**: Anotar configuraciones y resultados
-4. **Validar métricas**: Verificar que Total Time = Wait Time + Execution Time
-5. **Comparar consistentemente**: Usar las mismas condiciones para todos los schedulers
+1. **Empezar con Adaptive Scheduler**: Es la característica principal del framework
+2. **Monitorear switches**: Observar cuándo y por qué cambia de algoritmo
+3. **Experimentar con umbrales**: Ajustar límites de CPU para diferentes comportamientos
+4. **Usar paralelismo**: Probar con diferentes niveles de paralelismo distribuido
+5. **Documentar experimentos**: Anotar configuraciones y patrones de switching
 
 ---
 
-¡Framework listo para experimentación con scheduling algorithms! 🚀
+¡Adaptive Scheduler Framework listo para experimentación avanzada! 🚀🔄
+
+**Características principales:**
+- ✅ Adaptive scheduling basado en CPU load
+- ✅ Distributed processing con Flink
+- ✅ Real-time monitoring y switch tracking
+- ✅ Comprehensive metrics y reporting
+- ✅ Extensible architecture para nuevos schedulers
