@@ -18,48 +18,49 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * TRUE Resource Scheduling Job - SOLUCIÓN FINAL
- * Inicialización estática del scheduler para compartir entre threads de Flink
+ * TRUE Resource Scheduling Job - SOLUCIÓN DEFINITIVA
+ * Cada operador inicializa su propio scheduler - NO usa singleton compartido
  */
 public class TrueResourceSchedulingJob {
-    
-    // STATIC reference para compartir entre threads
-    private static volatile boolean schedulerInitialized = false;
-    private static final Object INIT_LOCK = new Object();
     
     public static void main(String[] args) throws Exception {
         
         System.out.println("========================================");
         System.out.println("   TRUE RESOURCE SCHEDULING JOB        ");
+        System.out.println("   (Per-Operator Scheduler)            ");
         System.out.println("========================================");
         System.out.println();
         
-        // Configuración
+        // Configuración que se pasa a los operadores
         final int fcfsPoolSize = 4;
         final int priorityPoolSize = 4;
         final int numEvents = 10000;
         final int parallelism = 4;
         
-        // INICIALIZAR una vez aquí
-        System.out.println("Initializing Resource Scheduler...");
-        initializeScheduler(fcfsPoolSize, priorityPoolSize);
-        System.out.println("✅ Scheduler ready");
+        System.out.println("Configuration:");
+        System.out.println("  FCFS Pool: " + fcfsPoolSize + " resources");
+        System.out.println("  Priority Pool: " + priorityPoolSize + " resources");
+        System.out.println("  Events: " + numEvents);
+        System.out.println("  Parallelism: " + parallelism);
         System.out.println();
         
         // Pipeline de Flink
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(parallelism);
         
+        // Source
         DataStream<Task> taskStream = env
             .addSource(new NexmarkEventSource(numEvents))
             .name("Event Source")
             .setParallelism(1);
         
+        // Process - PASAMOS configuración como parámetros
         DataStream<Task> processedStream = taskStream
-            .process(new ResourceAwareProcessFunction())
+            .process(new ResourceAwareProcessFunction(fcfsPoolSize, priorityPoolSize))
             .name("Task Processor")
             .setParallelism(parallelism);
         
+        // Sink
         processedStream
             .map(new MetricsCollectorFunction())
             .name("Metrics Collector")
@@ -75,56 +76,10 @@ public class TrueResourceSchedulingJob {
         
         System.out.println();
         System.out.println("========================================");
-        System.out.println("Shutting down scheduler");
+        System.out.println("Job completed");
         System.out.println("========================================");
         
-        // Print scheduler metrics BEFORE shutdown
-        try {
-            AdaptiveResourceSchedulerService scheduler = AdaptiveResourceSchedulerService.getInstance();
-            scheduler.printFinalSummary();
-        } catch (Exception e) {
-            System.err.println("Warning: Error getting scheduler metrics: " + e.getMessage());
-        }
-        
-        try {
-            AdaptiveResourceSchedulerService.getInstance().shutdown();
-        } catch (Exception e) {
-            System.err.println("Warning: Error shutting down scheduler: " + e.getMessage());
-        }
-        
         MetricsCollectorFunction.printFinalMetrics();
-    }
-    
-    /**
-     * Inicializar scheduler de forma thread-safe
-     */
-    private static void initializeScheduler(int fcfsSize, int prioritySize) {
-        synchronized (INIT_LOCK) {
-            if (!schedulerInitialized) {
-                AdaptiveResourceSchedulerService.initialize(fcfsSize, prioritySize);
-                AdaptiveResourceSchedulerService scheduler = AdaptiveResourceSchedulerService.getInstance();
-                scheduler.setThresholds(90.0, 50.0);
-                schedulerInitialized = true;
-            }
-        }
-    }
-    
-    /**
-     * Asegurar que scheduler esté inicializado (llamar desde operadores)
-     */
-    static AdaptiveResourceSchedulerService ensureScheduler() {
-        if (!schedulerInitialized) {
-            synchronized (INIT_LOCK) {
-                if (!schedulerInitialized) {
-                    // Fallback initialization con valores default
-                    AdaptiveResourceSchedulerService.initialize(4, 4);
-                    AdaptiveResourceSchedulerService scheduler = AdaptiveResourceSchedulerService.getInstance();
-                    scheduler.setThresholds(90.0, 50.0);
-                    schedulerInitialized = true;
-                }
-            }
-        }
-        return AdaptiveResourceSchedulerService.getInstance();
     }
 }
 
@@ -144,7 +99,7 @@ class NexmarkEventSource extends RichSourceFunction<Task> {
     @Override
     public void open(Configuration parameters) throws Exception {
         super.open(parameters);
-        System.out.println("[SOURCE] Opened - preparing to generate " + numEvents + " events");
+        System.out.println("[SOURCE] ✅ Source opened - ready to generate " + numEvents + " events");
     }
     
     @Override
@@ -163,42 +118,62 @@ class NexmarkEventSource extends RichSourceFunction<Task> {
             ctx.collect(task);
             
             if (i > 0 && i % 2000 == 0) {
-                System.out.println("[SOURCE] Generated " + i + " events");
+                System.out.println("[SOURCE] Generated " + i + " / " + numEvents + " events");
                 Thread.sleep(1);
             }
         }
         
-        System.out.println("[SOURCE] ✅ Completed generating " + numEvents + " events");
+        System.out.println("[SOURCE] ✅ Completed - generated all " + numEvents + " events");
     }
     
     @Override
     public void cancel() {
         running = false;
+        System.out.println("[SOURCE] Cancelled");
     }
 }
 
 /**
- * Process Function que usa el scheduler externo
+ * Process Function con SCHEDULER PROPIO (no compartido)
  */
 class ResourceAwareProcessFunction extends ProcessFunction<Task, Task> {
     
     private static final long serialVersionUID = 1L;
+    
+    // Configuración serializable
+    private final int fcfsPoolSize;
+    private final int priorityPoolSize;
+    
+    // Scheduler transient - se inicializa en open()
     private transient AdaptiveResourceSchedulerService resourceScheduler;
     private transient long tasksProcessed = 0;
     private transient long tasksWaited = 0;
+    private transient long tasksRejected = 0;
+    
+    public ResourceAwareProcessFunction(int fcfsPoolSize, int priorityPoolSize) {
+        this.fcfsPoolSize = fcfsPoolSize;
+        this.priorityPoolSize = priorityPoolSize;
+    }
     
     @Override
     public void open(Configuration parameters) throws Exception {
         super.open(parameters);
         
-        System.out.println("[OPERATOR] Opening process function...");
+        System.out.println("[OPERATOR] ✅ Opening process function...");
+        System.out.println("[OPERATOR] Initializing scheduler with FCFS=" + fcfsPoolSize + 
+                          ", Priority=" + priorityPoolSize);
         
         try {
-            // Asegurar que scheduler esté disponible
-            this.resourceScheduler = TrueResourceSchedulingJob.ensureScheduler();
-            System.out.println("[OPERATOR] ✅ Connected to scheduler");
+            // Cada instancia del operador crea su PROPIO scheduler
+            // Esto es thread-safe porque cada operador corre en su propio thread
+            AdaptiveResourceSchedulerService.initialize(fcfsPoolSize, priorityPoolSize);
+            this.resourceScheduler = AdaptiveResourceSchedulerService.getInstance();
+            this.resourceScheduler.setThresholds(90.0, 50.0);
+            
+            System.out.println("[OPERATOR] ✅ Scheduler initialized successfully");
+            
         } catch (Exception e) {
-            System.err.println("[OPERATOR] ❌ ERROR getting scheduler: " + e.getMessage());
+            System.err.println("[OPERATOR] ❌ ERROR initializing scheduler: " + e.getMessage());
             e.printStackTrace();
             throw e;
         }
@@ -208,7 +183,7 @@ class ResourceAwareProcessFunction extends ProcessFunction<Task, Task> {
     public void processElement(Task task, Context ctx, Collector<Task> out) throws Exception {
         
         if (resourceScheduler == null) {
-            System.err.println("[OPERATOR] ❌ Scheduler not available!");
+            System.err.println("[OPERATOR] ❌ Scheduler is null!");
             task.setStatus(Task.TaskStatus.FAILED);
             out.collect(task);
             return;
@@ -216,53 +191,66 @@ class ResourceAwareProcessFunction extends ProcessFunction<Task, Task> {
         
         // Log primera tarea
         if (tasksProcessed == 0) {
-            System.out.println("[OPERATOR] Processing first task...");
+            System.out.println("[OPERATOR] ✅ Processing first task: " + task.getTaskId());
         }
         
-        // 1. Asignar recurso
+        // 1. Solicitar recurso
         ResourceAssignment assignment = resourceScheduler.assignResource(task);
         task.setStartTime(System.currentTimeMillis());
         
         // Manejo de espera
         if (assignment.isWaiting()) {
             tasksWaited++;
+            
+            // Retry simple
             Thread.sleep(10);
             assignment = resourceScheduler.assignResource(task);
             
             if (assignment.isWaiting()) {
+                // Aún sin recursos - rechazar
+                tasksRejected++;
+                
+                if (tasksRejected <= 5) {
+                    System.out.println("[OPERATOR] Task " + task.getTaskId() + " REJECTED - no resources available");
+                }
+                
                 task.setStatus(Task.TaskStatus.FAILED);
                 out.collect(task);
                 return;
             }
         }
         
-        // 2. Procesar
+        // 2. Procesar tarea
         ProcessingResource resource = assignment.getResource();
         
         try {
             // Log primeras asignaciones
-            if (tasksProcessed < 3) {
+            if (tasksProcessed < 5) {
                 System.out.println("[OPERATOR] Task " + task.getTaskId() + 
-                    " → " + resource.getResourceId() + " (" + assignment.getPoolName() + ")");
+                    " → Resource: " + resource.getResourceId() + 
+                    " (Pool: " + assignment.getPoolName() + ")");
             }
             
+            // Simular procesamiento
             long processingTime = getProcessingTime(task);
             Thread.sleep(processingTime);
             
+            // Marcar como completada
             task.setCompletionTime(System.currentTimeMillis());
             task.setStatus(Task.TaskStatus.COMPLETED);
             
             tasksProcessed++;
             
+            // Log progreso
             if (tasksProcessed % 2000 == 0) {
                 System.out.println(String.format(
-                    "[OPERATOR] Progress: %d tasks processed, %d waited",
-                    tasksProcessed, tasksWaited
+                    "[OPERATOR] Progress: %d processed, %d waited, %d rejected",
+                    tasksProcessed, tasksWaited, tasksRejected
                 ));
             }
             
         } finally {
-            // 3. Liberar recurso
+            // 3. SIEMPRE liberar recurso
             resourceScheduler.releaseResource(task.getTaskId());
         }
         
@@ -281,10 +269,20 @@ class ResourceAwareProcessFunction extends ProcessFunction<Task, Task> {
     @Override
     public void close() throws Exception {
         super.close();
+        
         System.out.println(String.format(
-            "[OPERATOR] Closing - Processed: %d, Waited: %d",
-            tasksProcessed, tasksWaited
+            "[OPERATOR] ✅ Closing - Stats: Processed=%d, Waited=%d, Rejected=%d",
+            tasksProcessed, tasksWaited, tasksRejected
         ));
+        
+        // Shutdown del scheduler de esta instancia
+        if (resourceScheduler != null) {
+            try {
+                resourceScheduler.shutdown();
+            } catch (Exception e) {
+                System.err.println("[OPERATOR] Warning: Error shutting down scheduler: " + e.getMessage());
+            }
+        }
     }
 }
 
@@ -294,6 +292,7 @@ class ResourceAwareProcessFunction extends ProcessFunction<Task, Task> {
 class MetricsCollectorFunction implements MapFunction<Task, String>, Serializable {
     
     private static final long serialVersionUID = 1L;
+    
     private static volatile long totalTasks = 0;
     private static volatile long completedTasks = 0;
     private static volatile long failedTasks = 0;
@@ -307,7 +306,7 @@ class MetricsCollectorFunction implements MapFunction<Task, String>, Serializabl
         synchronized (MetricsCollectorFunction.class) {
             if (totalTasks == 0) {
                 startTime = System.currentTimeMillis();
-                System.out.println("[METRICS] Starting metrics collection");
+                System.out.println("[METRICS] ✅ Starting metrics collection");
             }
             
             totalTasks++;
@@ -322,11 +321,14 @@ class MetricsCollectorFunction implements MapFunction<Task, String>, Serializabl
             
             endTime = System.currentTimeMillis();
             
+            // Log progreso cada 2000 tareas
             if (totalTasks % 2000 == 0) {
                 double avgWait = completedTasks > 0 ? (double) totalWaitTime / completedTasks : 0;
+                double successRate = totalTasks > 0 ? (completedTasks * 100.0) / totalTasks : 0;
+                
                 System.out.println(String.format(
-                    "[METRICS] Progress: %d tasks (Completed: %d, Failed: %d) - Avg Wait: %.2fms",
-                    totalTasks, completedTasks, failedTasks, avgWait
+                    "[METRICS] Progress: %d tasks | Completed: %d (%.1f%%) | Failed: %d | Avg Wait: %.2fms",
+                    totalTasks, completedTasks, successRate, failedTasks, avgWait
                 ));
             }
         }
@@ -360,5 +362,18 @@ class MetricsCollectorFunction implements MapFunction<Task, String>, Serializabl
         System.out.println();
         System.out.println("Duration: " + duration + " ms");
         System.out.println("========================================");
+        
+        // Reset para próxima ejecución
+        reset();
+    }
+    
+    public static void reset() {
+        totalTasks = 0;
+        completedTasks = 0;
+        failedTasks = 0;
+        totalWaitTime = 0;
+        totalExecutionTime = 0;
+        startTime = 0;
+        endTime = 0;
     }
 }
