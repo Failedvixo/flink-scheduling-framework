@@ -50,20 +50,20 @@ public class SystemMonitor {
      */
     private double getSimulatedCpuUsage() {
         taskCounter++;
-        long cyclePosition = taskCounter % 400;  // Ciclo más corto para más switches
+        long cyclePosition = taskCounter % 2000;
         
-        if (cyclePosition < 100) {
-            // Carga baja: 20-40% (debajo del threshold de 50%)
-            return 20.0 + (cyclePosition * 0.2);
-        } else if (cyclePosition < 200) {
-            // Subida rápida: 40-95% (cruza threshold de 90%)
-            return 40.0 + ((cyclePosition - 100) * 0.55);
-        } else if (cyclePosition < 300) {
-            // Carga alta: 95-92% (arriba del threshold de 90%)
-            return 95.0 - ((cyclePosition - 200) * 0.03);
+        if (cyclePosition < 500) {
+            // Carga baja: 30-80%
+            return 30.0 + (cyclePosition * 0.1);
+        } else if (cyclePosition < 1000) {
+            // Carga alta: 80-90%
+            return 80.0 + ((cyclePosition - 500) * 0.02);
+        } else if (cyclePosition < 1200) {
+            // Pico: 90-95%
+            return 90.0 + ((cyclePosition - 1000) * 0.025);
         } else {
-            // Descenso rápido: 92-20% (cruza threshold de 50%)
-            return 92.0 - ((cyclePosition - 300) * 0.72);
+            // Descenso: 95-30%
+            return 95.0 - ((cyclePosition - 1200) * 0.08);
         }
     }
     
