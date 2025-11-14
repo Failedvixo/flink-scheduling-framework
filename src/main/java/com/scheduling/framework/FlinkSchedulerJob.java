@@ -34,10 +34,10 @@ public class FlinkSchedulerJob {
         System.out.println("========================================");
         
         // Opción 1: Usar configuración predefinida (descomenta para usar)
-        // runWithPredefinedConfig();
+        runWithPredefinedConfig();
         
         // Opción 2: Usar configuración hardcodeada (actual)
-        runAdaptiveSchedulerTest();
+        // runAdaptiveSchedulerTest();
         
         // Mostrar resumen final
         AdaptiveResultCollector.printFinalSummary();
